@@ -40,7 +40,10 @@ import { type MessageQueueWorkerOptions } from 'src/engine/core-modules/message-
 import { DEFAULT_JOB_PRIORITY } from 'src/engine/core-modules/message-queue/constants/default-job-priority.constant';
 import { QUEUE_JOB_CHANGED_EVENT } from 'src/engine/core-modules/message-queue/constants/queue-job-changed-event.constant';
 import { QUEUE_RETENTION } from 'src/engine/core-modules/message-queue/constants/queue-retention.constants';
-import { FAIR_TICKET_OFFSET } from 'src/engine/core-modules/message-queue/drivers/fairness/fair-priority.constant';
+import {
+  FAIR_TICKET_OFFSET,
+  URGENT_FAIR_PRIORITY,
+} from 'src/engine/core-modules/message-queue/drivers/fairness/fair-priority.constant';
 import { FairTicketAllocator } from 'src/engine/core-modules/message-queue/drivers/fairness/fair-ticket-allocator';
 import { type MessageQueue } from 'src/engine/core-modules/message-queue/message-queue.constants';
 import { type QueueJobChangedEvent } from 'src/engine/core-modules/message-queue/types/queue-job-changed-event.type';
@@ -391,7 +394,7 @@ export class BullMQDriver
   }: {
     queueName: MessageQueue;
     jobsData: unknown[];
-    options?: Pick<QueueJobOptions, 'groupKeys' | 'delay'>;
+    options?: Pick<QueueJobOptions, 'groupKeys' | 'urgent' | 'delay'>;
     staticPriority: number | undefined;
   }): Promise<(number | undefined)[]> {
     const staticPriorities = jobsData.map(() => staticPriority);
@@ -427,6 +430,10 @@ export class BullMQDriver
         jobCount: jobIndexes.length,
       })),
     });
+
+    if (options?.urgent) {
+      return jobsData.map(() => URGENT_FAIR_PRIORITY);
+    }
 
     if (!isDefined(tickets)) {
       void this.metricsService.incrementCounterForEvent({
