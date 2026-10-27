@@ -62,7 +62,11 @@ export type BullMQDriverOptions = QueueOptions;
 
 type BullMQJobsOptions = JobsOptions & {
   broadcastTo?: QueueJobRecipient;
+  // The scale a fair ticket was allocated on, so a rebase shifts the job exactly by the scales it missed
+  fairBase?: number;
 };
+
+type FairJobOptions = Pick<BullMQJobsOptions, 'priority' | 'fairBase'>;
 
 export class BullMQDriver
   implements MessageQueueDriver, OnModuleDestroy, OnModuleInit
@@ -395,7 +399,7 @@ export class BullMQDriver
     return this.twentyConfigService.get('IS_WORKER_FAIRNESS_ENABLED');
   }
 
-  private async computeJobPriorities({
+  private async computeJobOptions({
     queueName,
     jobsData,
     options,
@@ -405,11 +409,13 @@ export class BullMQDriver
     jobsData: unknown[];
     options?: Pick<QueueJobOptions, 'groupKeys' | 'urgent' | 'delay'>;
     staticPriority: number | undefined;
-  }): Promise<(number | undefined)[]> {
-    const staticPriorities = jobsData.map(() => staticPriority);
+  }): Promise<FairJobOptions[]> {
+    const staticJobOptions: FairJobOptions[] = jobsData.map(() => ({
+      priority: staticPriority,
+    }));
 
     if (!this.isFairnessEnabled() || (options?.delay ?? 0) > 0) {
-      return staticPriorities;
+      return staticJobOptions;
     }
 
     const requestByGroupKeys = new Map<
@@ -432,7 +438,7 @@ export class BullMQDriver
     });
 
     const requests = [...requestByGroupKeys.values()];
-    const tickets = await this.fairTicketAllocator.allocateTickets({
+    const fairTickets = await this.fairTicketAllocator.allocateTickets({
       queueName,
       requests: requests.map(({ groupKeys, jobIndexes }) => ({
         groupKeys,
@@ -441,20 +447,21 @@ export class BullMQDriver
     });
 
     if (options?.urgent) {
-      return jobsData.map(() => URGENT_FAIR_PRIORITY);
+      return jobsData.map(() => ({ priority: URGENT_FAIR_PRIORITY }));
     }
 
-    if (!isDefined(tickets)) {
+    if (!isDefined(fairTickets)) {
       void this.metricsService.incrementCounterForEvent({
         key: MetricsKeys.JobFairTagFallback,
         attributes: { queue: queueName },
         shouldStoreInCache: false,
       });
 
-      return staticPriorities;
+      return staticJobOptions;
     }
 
-    const priorities = [...staticPriorities];
+    const { base, tickets } = fairTickets;
+    const fairJobOptions = [...staticJobOptions];
 
     requests.forEach(({ jobIndexes }, requestIndex) => {
       const { tag, weight } = tickets[requestIndex];
@@ -462,13 +469,16 @@ export class BullMQDriver
       jobIndexes.forEach((jobIndex, position) => {
         const ticket = Math.floor(tag + position / weight);
 
-        priorities[jobIndex] =
-          FAIR_TICKET_OFFSET +
-          Math.min(PRIORITY_LIMIT - FAIR_TICKET_OFFSET, Math.max(0, ticket));
+        fairJobOptions[jobIndex] = {
+          priority:
+            FAIR_TICKET_OFFSET +
+            Math.min(PRIORITY_LIMIT - FAIR_TICKET_OFFSET, Math.max(0, ticket)),
+          fairBase: base,
+        };
       });
     });
 
-    return priorities;
+    return fairJobOptions;
   }
 
   async addCron<T>({
@@ -610,7 +620,7 @@ export class BullMQDriver
     }
 
     const queueOptions = this.buildJobsOptions(options);
-    const [priority] = await this.computeJobPriorities({
+    const [jobOptions] = await this.computeJobOptions({
       queueName,
       jobsData: [data],
       options,
@@ -619,7 +629,7 @@ export class BullMQDriver
 
     const job = await this.queueMap[queueName].add(jobName, data, {
       ...queueOptions,
-      priority,
+      ...jobOptions,
     });
 
     return job.id;
@@ -671,7 +681,7 @@ export class BullMQDriver
     }
 
     const queueOptions = this.buildJobsOptions(options);
-    const priorities = await this.computeJobPriorities({
+    const jobOptions = await this.computeJobOptions({
       queueName,
       jobsData: jobsToAdd.map(({ data }) => data),
       options,
@@ -684,7 +694,7 @@ export class BullMQDriver
         data,
         opts: {
           ...queueOptions,
-          priority: priorities[index],
+          ...jobOptions[index],
           jobId:
             jobId ??
             (queueOptions.jobId ? `${queueOptions.jobId}-${index}` : undefined),
