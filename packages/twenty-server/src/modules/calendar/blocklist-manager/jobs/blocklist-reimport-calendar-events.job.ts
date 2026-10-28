@@ -4,7 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { type ObjectRecordDeleteEvent } from 'twenty-shared/database-events';
 import { CalendarChannelSyncStage } from 'twenty-shared/types';
 import { isDefined } from 'twenty-shared/utils';
-import { type FindOptionsWhere, Not, type Repository } from 'typeorm';
+import { type FindOptionsWhere, In, Not, type Repository } from 'typeorm';
 
 import { Process } from 'src/engine/core-modules/message-queue/decorators/process.decorator';
 import { Processor } from 'src/engine/core-modules/message-queue/decorators/processor.decorator';
@@ -131,7 +131,11 @@ export class BlocklistReimportCalendarEventsJob {
   }): Promise<string[]> {
     const where: FindOptionsWhere<CalendarChannelEntity> = {
       syncStage: Not(
-        CalendarChannelSyncStage.CALENDAR_EVENT_LIST_FETCH_PENDING,
+        In([
+          CalendarChannelSyncStage.PENDING_CONFIGURATION,
+          CalendarChannelSyncStage.CALENDAR_EVENT_LIST_FETCH_ONGOING,
+          CalendarChannelSyncStage.CALENDAR_EVENTS_IMPORT_ONGOING,
+        ]),
       ),
       workspaceId,
     };
